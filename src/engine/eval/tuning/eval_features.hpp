@@ -46,6 +46,8 @@ struct EvalFeatures
 
     std::array<std::array<double, constants::BoardSize>, constants::PieceTypeCount> mg_pst{};
     std::array<std::array<double, constants::BoardSize>, constants::PieceTypeCount> eg_pst{};
+
+    int king_sq[2];
 };
 
 #endif

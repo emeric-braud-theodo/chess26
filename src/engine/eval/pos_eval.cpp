@@ -21,7 +21,7 @@ namespace Eval
         engine_constants::eval::rook_mob,
         engine_constants::eval::queen_mob};
 
-    static int evaluate_structured_threats(Color us, const VBoard &board)
+    int evaluate_structured_threats(Color us, const VBoard &board)
     {
         const Color them = (Color)!us;
         const U64 occupied = board.get_occupancy(NO_COLOR);
@@ -219,11 +219,18 @@ int Eval::eval(const VBoard &board, int alpha, int beta)
 
     // 1. Matériel + PST (Incrémental : GRATUIT)
     // On fusionne material_score directement ici pour éviter une addition finale
-    int mg_score = (state.mg_pst[WHITE] + state.pieces_val[WHITE]) -
-                   (state.mg_pst[BLACK] + state.pieces_val[BLACK]);
-    int eg_score = (state.eg_pst[WHITE] + state.pieces_val[WHITE]) -
-                   (state.eg_pst[BLACK] + state.pieces_val[BLACK]);
+    const int white_king_sq = state.king_sq[WHITE];
+    const int black_king_sq = state.king_sq[BLACK];
 
+    const int white_bucket = engine_constants::eval::PSQTBucketLayout[white_king_sq];
+    const int black_bucket = engine_constants::eval::PSQTBucketLayout[black_king_sq ^ 56];
+
+    // 2. Calcul du score initial avec les PST du bon bucket
+    int mg_score = (state.mg_pst[WHITE][white_bucket] + state.pieces_val[WHITE]) -
+                   (state.mg_pst[BLACK][black_bucket] + state.pieces_val[BLACK]);
+
+    int eg_score = (state.eg_pst[WHITE][white_bucket] + state.pieces_val[WHITE]) -
+                   (state.eg_pst[BLACK][black_bucket] + state.pieces_val[BLACK]);
     // 2. Structure des Pions (Cache Pawn Table)
     int mg_pawn = 0, eg_pawn = 0;
 

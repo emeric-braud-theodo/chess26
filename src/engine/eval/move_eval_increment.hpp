@@ -10,16 +10,18 @@
 
 struct EvalState
 {
-    int16_t mg_pst[2]; // Score Middle-Game PST
-    int16_t eg_pst[2]; // Score End-Game PST
-    int8_t phase;      // Phase actuelle (0 à 24)
-    U64 pawn_key;      // Clé Zobrist spécifique aux pions (pour la Pawn Table)
+    int16_t mg_pst[2][engine_constants::eval::PSQT_BUCKET_N]; // Score Middle-Game PST
+    int16_t eg_pst[2][engine_constants::eval::PSQT_BUCKET_N]; // Score End-Game PST
+    int8_t phase;                                             // Phase actuelle (0 à 24)
+    U64 pawn_key;                                             // Clé Zobrist spécifique aux pions (pour la Pawn Table)
+    int king_sq[2];
     int16_t pieces_val[2];
 
     EvalState() = default;
     EvalState(const std::array<U64, constants::NumPieceVariants> occupancy)
     {
-        mg_pst[0] = mg_pst[1] = eg_pst[0] = eg_pst[1] = 0;
+        for (int b = 0; b < engine_constants::eval::PSQT_BUCKET_N; ++b)
+            mg_pst[0][b] = mg_pst[1][b] = eg_pst[0][b] = eg_pst[1][b] = 0;
         pieces_val[0] = pieces_val[1] = 0;
         phase = 0;
         pawn_key = 0;
@@ -52,6 +54,11 @@ struct EvalState
         {
             phase = engine_constants::eval::totalPhase;
         }
+        U64 temp_king_occ_white = occupancy[KING];
+        U64 temp_king_occ_black = occupancy[BLACK * constants::PieceTypeCount + KING];
+
+        king_sq[WHITE] = cpu::pop_lsb(temp_king_occ_white);
+        king_sq[BLACK] = cpu::pop_lsb(temp_king_occ_black);
     }
 
     inline void increment(const Move &m, Color us)
@@ -153,33 +160,41 @@ private:
     // Dans EvalState : s'assurer que add_piece et remove_piece gèrent king_sq proprement
     inline void add_piece(Piece p, int sq, Color c)
     {
-        int mirror = (c == WHITE) ? sq : sq ^ 56;
-
-        // Utilisation des tables respectives MG et EG
-        int pst_mg = engine_constants::eval::mg_tables[p][mirror];
-        int pst_eg = engine_constants::eval::eg_tables[p][mirror];
-
-        mg_pst[c] += pst_mg;
-        eg_pst[c] += pst_eg;
+        // 1. Valeur matérielle (ne change pas selon le bucket)
         pieces_val[c] += engine_constants::eval::pieces_score[p];
-
         if (p == PAWN)
             pawn_key ^= zobrist_table[PAWN + (c == BLACK ? 6 : 0)][sq];
+
+        // 2. Gestion spéciale pour le ROI
+        if (p == KING)
+        {
+            king_sq[c] = sq;
+        }
+
+        // 3. Mise à jour des PST pour TOUS les buckets
+        // On itère sur les buckets du camp "c"
+        int mirror = (c == WHITE) ? sq : sq ^ 56;
+
+        for (int b = 0; b < engine_constants::eval::PSQT_BUCKET_N; ++b)
+        {
+            mg_pst[c][b] += engine_constants::eval::mg_tables[p][b][mirror];
+            eg_pst[c][b] += engine_constants::eval::eg_tables[p][b][mirror];
+        }
     }
 
     inline void remove_piece(Piece p, int sq, Color c)
     {
-        int mirror = (c == WHITE) ? sq : sq ^ 56;
-
-        int pst_mg = engine_constants::eval::mg_tables[p][mirror];
-        int pst_eg = engine_constants::eval::eg_tables[p][mirror];
-
-        mg_pst[c] -= pst_mg;
-        eg_pst[c] -= pst_eg;
         pieces_val[c] -= engine_constants::eval::pieces_score[p];
-
         if (p == PAWN)
             pawn_key ^= zobrist_table[PAWN + (c == BLACK ? 6 : 0)][sq];
+
+        int mirror = (c == WHITE) ? sq : sq ^ 56;
+
+        for (int b = 0; b < engine_constants::eval::PSQT_BUCKET_N; ++b)
+        {
+            mg_pst[c][b] -= engine_constants::eval::mg_tables[p][b][mirror];
+            eg_pst[c][b] -= engine_constants::eval::eg_tables[p][b][mirror];
+        }
     }
     inline void update_phase_on_capture(Piece p)
     {

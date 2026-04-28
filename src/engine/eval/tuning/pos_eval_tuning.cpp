@@ -311,81 +311,107 @@ namespace Eval
     double score_eval_features(const EvalFeatures &f, const VBoard &board)
     {
         const EvalState &state = board.get_eval_state();
+        using namespace engine_constants::eval;
 
-        // Base fixe non tunée : material + PST
-        double mg = (state.mg_pst[WHITE]) -
-                    (state.mg_pst[BLACK]);
+        // 1. Détermination des buckets PSQT (Crucial pour la consistance)
+        const int white_king_sq = state.king_sq[WHITE];
+        const int black_king_sq = state.king_sq[BLACK];
+        const int white_bucket = PSQTBucketLayout[white_king_sq];
+        const int black_bucket = PSQTBucketLayout[black_king_sq ^ 56];
 
-        double eg = (state.eg_pst[WHITE]) -
-                    (state.eg_pst[BLACK]);
+        // 2. Base PST (Incrémentale) utilisant les bons buckets
+        double mg = static_cast<double>(state.mg_pst[WHITE][white_bucket]) -
+                    static_cast<double>(state.mg_pst[BLACK][black_bucket]);
 
+        double eg = static_cast<double>(state.eg_pst[WHITE][white_bucket]) -
+                    static_cast<double>(state.eg_pst[BLACK][black_bucket]);
+
+        // 3. Matériel
         for (int i = PAWN; i <= QUEEN; ++i)
         {
-            mg += f.material[i] * engine_constants::eval::pieces_score[i];
-            eg += f.material[i] * engine_constants::eval::pieces_score[i];
+            double val = f.material[i] * pieces_score[i];
+            mg += val;
+            eg += val;
         }
 
-        mg += f.doubled_files * engine_constants::eval::doubledFilesMgMalus;
-        eg += f.doubled_files * engine_constants::eval::doubledFilesEgMalus;
+        // 4. Structure de pions
+        mg += f.doubled_files * doubledFilesMgMalus;
+        eg += f.doubled_files * doubledFilesEgMalus;
 
-        mg += f.isolated_files * engine_constants::eval::isolatedFilesMgMalus;
-        eg += f.isolated_files * engine_constants::eval::isolatedFilesEgMalus;
+        mg += f.isolated_files * isolatedFilesMgMalus;
+        eg += f.isolated_files * isolatedFilesEgMalus;
 
-        mg += f.open_files_near_king * engine_constants::eval::openFileMalus;
-        mg += f.semi_open_files_near_king * engine_constants::eval::semiOpenFileMalus;
-        mg += f.heavy_on_open * engine_constants::eval::heavyEnemiesOpenFileMalus;
-        mg += f.heavy_on_semi_open * engine_constants::eval::heavyEnemiesSemiOpenFileMalus;
+        // 5. King Safety (Sécurité du Roi)
+        mg += f.open_files_near_king * openFileMalus;
+        mg += f.semi_open_files_near_king * semiOpenFileMalus;
+        mg += f.heavy_on_open * heavyEnemiesOpenFileMalus;
+        mg += f.heavy_on_semi_open * heavyEnemiesSemiOpenFileMalus;
 
+        // 6. Menaces (Threats) - Ajoutées au MG ET EG pour matcher Eval::eval
         for (int attacker = 0; attacker < constants::PieceTypeCount; ++attacker)
         {
             for (int victim = 0; victim < constants::PieceTypeCount; ++victim)
             {
-                mg += f.defended_threats[attacker][victim] * engine_constants::eval::defendedThreatsBonus[attacker][victim];
-                mg += f.undefended_threats[attacker][victim] * engine_constants::eval::undefendedThreatsBonus[attacker][victim];
+                double bonus_def = f.defended_threats[attacker][victim] * defendedThreatsBonus[attacker][victim];
+                double bonus_undef = f.undefended_threats[attacker][victim] * undefendedThreatsBonus[attacker][victim];
+
+                double total_threat = bonus_def + bonus_undef;
+                mg += total_threat;
+                eg += total_threat;
             }
         }
 
-        mg += f.pawn_push_threats * engine_constants::eval::pawnPushThreatBonus;
+        double p_push = f.pawn_push_threats * pawnPushThreatBonus;
+        mg += p_push;
+        eg += p_push;
 
-        mg += f.bishop_pair_mg * engine_constants::eval::bishopPairMgBonus;
-        eg += f.bishop_pair_eg * engine_constants::eval::bishopPairEgBonus;
+        // 7. Paire de Fous
+        mg += f.bishop_pair_mg * bishopPairMgBonus;
+        eg += f.bishop_pair_eg * bishopPairEgBonus;
 
-        // Mop-up : endgame only
-        eg += f.king_dist_center * engine_constants::eval::kingDistFromCenterBonus;
-        eg += f.king_closeness * engine_constants::eval::closeKingBonus;
+        // 8. Mop-up (Endgame only)
+        eg += f.king_dist_center * kingDistFromCenterBonus;
+        eg += f.king_closeness * closeKingBonus;
 
+        // 9. Pions passés
         for (int i = 0; i < 8; ++i)
         {
-            mg += f.passed_mg[i] * engine_constants::eval::passed_bonus_mg[i];
-            eg += f.passed_eg[i] * engine_constants::eval::passed_bonus_eg[i];
+            mg += f.passed_mg[i] * passed_bonus_mg[i];
+            eg += f.passed_eg[i] * passed_bonus_eg[i];
         }
 
+        // 10. Mobilité (Ajoutée au MG ET EG pour matcher Eval::eval)
         for (int i = 0; i < 9; ++i)
         {
-            mg += f.knight_mob[i] * engine_constants::eval::knight_mob[i];
-            eg += f.knight_mob[i] * engine_constants::eval::knight_mob[i];
+            double val = f.knight_mob[i] * knight_mob[i];
+            mg += val;
+            eg += val;
         }
-
         for (int i = 0; i < 14; ++i)
         {
-            mg += f.bishop_mob[i] * engine_constants::eval::bishop_mob[i];
-            eg += f.bishop_mob[i] * engine_constants::eval::bishop_mob[i];
+            double val = f.bishop_mob[i] * bishop_mob[i];
+            mg += val;
+            eg += val;
         }
-
         for (int i = 0; i < 15; ++i)
         {
-            mg += f.rook_mob[i] * engine_constants::eval::rook_mob[i];
-            eg += f.rook_mob[i] * engine_constants::eval::rook_mob[i];
+            double val = f.rook_mob[i] * rook_mob[i];
+            mg += val;
+            eg += val;
         }
-
         for (int i = 0; i < 28; ++i)
         {
-            mg += f.queen_mob[i] * engine_constants::eval::queen_mob[i];
-            eg += f.queen_mob[i] * engine_constants::eval::queen_mob[i];
+            double val = f.queen_mob[i] * queen_mob[i];
+            mg += val;
+            eg += val;
         }
 
-        return (mg * state.phase + eg * (engine_constants::eval::totalPhase - state.phase)) /
-               engine_constants::eval::totalPhase;
+        // 11. Interpolation finale avec précision entière identique à Eval::eval
+        // On arrondit d'abord les totaux MG/EG en entiers pour simuler l'arithmétique du moteur
+        int final_mg = static_cast<int>(std::round(mg));
+        int final_eg = static_cast<int>(std::round(eg));
+
+        return static_cast<double>((final_mg * state.phase + final_eg * (totalPhase - state.phase)) / totalPhase);
     }
 }
 

@@ -72,6 +72,7 @@ namespace Eval
 
     static constexpr PawnMasks masks = generate_masks();
 
+    int evaluate_structured_threats(Color us, const VBoard &board);
     int evaluate_castling_and_safety(Color color, const VBoard &board);
 
     void evaluate_pawns(Color color, const VBoard &board, int &mg, int &eg);

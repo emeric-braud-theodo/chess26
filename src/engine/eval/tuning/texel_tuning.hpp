@@ -72,6 +72,28 @@ void dump_pst(std::ofstream &out, const char *name, const TunableParam (&arr)[N]
     }
     out << "}\n\n";
 }
+
+template <std::size_t B, std::size_t N>
+void dump_pst_buckets(std::ofstream &out, const char *name, const TunableParam (&arr)[B][N])
+{
+    out << name << " = {\n";
+    for (std::size_t b = 0; b < B; ++b)
+    {
+        out << "    { // Bucket " << b << "\n";
+        for (std::size_t i = 0; i < N; ++i)
+        {
+            out << "        " << arr[b][i].value;
+            if (i + 1 != N)
+                out << ",";
+            if ((i + 1) % 8 == 0)
+                out << "\n";
+            else
+                out << " ";
+        }
+        out << "    }" << (b + 1 < B ? "," : "") << "\n";
+    }
+    out << "}\n\n";
+}
 struct TexelGradients
 {
     double doubledFilesMgMalus = 0.0;
@@ -106,8 +128,8 @@ struct TexelGradients
 
     std::array<double, constants::PieceTypeCount> pieces_score{};
 
-    std::array<std::array<double, constants::BoardSize>, constants::PieceTypeCount> mg_pst{};
-    std::array<std::array<double, constants::BoardSize>, constants::PieceTypeCount> eg_pst{};
+    std::array<std::array<std::array<double, constants::BoardSize>, engine_constants::eval::PSQT_BUCKET_N>, constants::PieceTypeCount> mg_pst{};
+    std::array<std::array<std::array<double, constants::BoardSize>, engine_constants::eval::PSQT_BUCKET_N>, constants::PieceTypeCount> eg_pst{};
 };
 
 static std::optional<TexelSample> parse_quiet_labeled_line(const std::string &line)
@@ -154,7 +176,7 @@ class TexelTuner
     static constexpr int epochs = 1000;
     static constexpr std::size_t batch_size = 4096;
 
-    double learning_rate = 100.0;
+    double learning_rate = 1000.0;
 
     double sigmoid(double s) const
     {
@@ -243,18 +265,32 @@ class TexelTuner
             eg += f.queen_mob[i] * queen_mob[i];
         }
 
+        int white_king_sq = s.features.king_sq[WHITE];
+        int black_king_sq = s.features.king_sq[BLACK];
+        int white_bucket = PSQTBucketLayout[white_king_sq];
+        int black_bucket = PSQTBucketLayout[black_king_sq ^ 56];
+
         for (int piece = PAWN; piece <= KING; ++piece)
         {
             const std::uint8_t count = s.sparse_pst_count[piece];
             for (std::uint8_t i = 0; i < count; ++i)
             {
                 const auto &term = s.sparse_pst[piece][i];
-                mg += term.coeff * mg_tables[piece][term.sq];
-                eg += term.coeff * eg_tables[piece][term.sq];
+
+                // On récupère le bucket approprié selon la couleur de la pièce
+                // term.coeff est positif pour nos pièces, négatif pour l'ennemi
+                int bucket = (term.coeff > 0) ? white_bucket : black_bucket;
+
+                mg += term.coeff * mg_tables[piece][bucket][term.sq];
+                eg += term.coeff * eg_tables[piece][bucket][term.sq];
             }
         }
 
-        return (mg * s.phase + eg * (totalPhase - s.phase)) / totalPhase;
+        int final_mg = static_cast<int>(std::round(mg)); // round pour compenser les erreurs de flottants
+        int final_eg = static_cast<int>(std::round(eg));
+
+        // 2. Utilise EXACTEMENT la même formule de division entière que Eval::eval
+        return (final_mg * s.phase + final_eg * (engine_constants::eval::totalPhase - s.phase)) / engine_constants::eval::totalPhase;
     }
 
     TexelTrainingSample make_training_sample(const TexelSample &sample) const
@@ -381,19 +417,19 @@ class TexelTuner
         }
         out << " }\n";
 
-        dump_pst(out, "mg_pawn_table", mg_pawn_table);
-        dump_pst(out, "mg_knight_table", mg_knight_table);
-        dump_pst(out, "mg_bishop_table", mg_bishop_table);
-        dump_pst(out, "mg_rook_table", mg_rook_table);
-        dump_pst(out, "mg_queen_table", mg_queen_table);
-        dump_pst(out, "mg_king_table", mg_king_table);
+        dump_pst_buckets(out, "mg_pawn_table", mg_pawn_table);
+        dump_pst_buckets(out, "mg_knight_table", mg_knight_table);
+        dump_pst_buckets(out, "mg_bishop_table", mg_bishop_table);
+        dump_pst_buckets(out, "mg_rook_table", mg_rook_table);
+        dump_pst_buckets(out, "mg_queen_table", mg_queen_table);
+        dump_pst_buckets(out, "mg_king_table", mg_king_table);
 
-        dump_pst(out, "eg_pawn_table", eg_pawn_table);
-        dump_pst(out, "eg_knight_table", eg_knight_table);
-        dump_pst(out, "eg_bishop_table", eg_bishop_table);
-        dump_pst(out, "eg_rook_table", eg_rook_table);
-        dump_pst(out, "eg_queen_table", eg_queen_table);
-        dump_pst(out, "eg_king_table", eg_king_table);
+        dump_pst_buckets(out, "eg_pawn_table", eg_pawn_table);
+        dump_pst_buckets(out, "eg_knight_table", eg_knight_table);
+        dump_pst_buckets(out, "eg_bishop_table", eg_bishop_table);
+        dump_pst_buckets(out, "eg_rook_table", eg_rook_table);
+        dump_pst_buckets(out, "eg_queen_table", eg_queen_table);
+        dump_pst_buckets(out, "eg_king_table", eg_king_table);
     }
 
     std::vector<TexelSample> load_raw_samples()
@@ -534,10 +570,14 @@ class TexelTuner
 
         for (int piece = PAWN; piece <= KING; ++piece)
         {
-            for (int sq = 0; sq < constants::BoardSize; ++sq)
+            // AJOUT DE LA BOUCLE SUR LES BUCKETS
+            for (int bucket = 0; bucket < engine_constants::eval::PSQT_BUCKET_N; ++bucket)
             {
-                a.mg_pst[piece][sq] += b.mg_pst[piece][sq];
-                a.eg_pst[piece][sq] += b.eg_pst[piece][sq];
+                for (int sq = 0; sq < constants::BoardSize; ++sq)
+                {
+                    a.mg_pst[piece][bucket][sq] += b.mg_pst[piece][bucket][sq];
+                    a.eg_pst[piece][bucket][sq] += b.eg_pst[piece][bucket][sq];
+                }
             }
         }
     }
@@ -613,14 +653,23 @@ class TexelTuner
         const double mg_common = common * mg_scale;
         const double eg_common = common * eg_scale;
 
+        int white_king_sq = s.features.king_sq[WHITE];
+        int black_king_sq = s.features.king_sq[BLACK];
+        int white_bucket = engine_constants::eval::PSQTBucketLayout[white_king_sq];
+        int black_bucket = engine_constants::eval::PSQTBucketLayout[black_king_sq ^ 56];
+
         for (int piece = PAWN; piece <= KING; ++piece)
         {
             const std::uint8_t count = s.sparse_pst_count[piece];
             for (std::uint8_t i = 0; i < count; ++i)
             {
                 const auto &term = s.sparse_pst[piece][i];
-                g.mg_pst[piece][term.sq] += mg_common * term.coeff;
-                g.eg_pst[piece][term.sq] += eg_common * term.coeff;
+
+                // On n'applique le gradient qu'au bucket qui était actif
+                int bucket = (term.coeff > 0) ? white_bucket : black_bucket;
+
+                g.mg_pst[piece][bucket][term.sq] += mg_common * term.coeff;
+                g.eg_pst[piece][bucket][term.sq] += eg_common * term.coeff;
             }
         }
     }
@@ -682,10 +731,15 @@ class TexelTuner
         }
         for (int piece = PAWN; piece <= KING; ++piece)
         {
-            for (int sq = 0; sq < constants::BoardSize; ++sq)
+            for (int b = 0; b < engine_constants::eval::PSQT_BUCKET_N; ++b)
             {
-                mg_tables[piece][sq].value -= scale * g.mg_pst[piece][sq];
-                eg_tables[piece][sq].value -= scale * g.eg_pst[piece][sq];
+                for (int sq = 0; sq < constants::BoardSize; ++sq)
+                {
+                    // On accède aux tables globales définies dans engine_constants::eval
+                    // Assurez-vous que le type n'est pas "const TunableParam" ici
+                    engine_constants::eval::mg_tables[piece][b][sq].value -= scale * g.mg_pst[piece][b][sq];
+                    engine_constants::eval::eg_tables[piece][b][sq].value -= scale * g.eg_pst[piece][b][sq];
+                }
             }
         }
     }
@@ -840,12 +894,12 @@ class TexelTuner
                       << " | valid loss = "
                       << valid_loss
                       << std::endl;
-
-            save_params(
-                file::get_data_path("tuning_output/texel_params_epoch_" + std::to_string(epoch + 1) + ".txt"),
-                epoch + 1,
-                train_loss,
-                valid_loss);
+            if ((epoch + 1) % 10 == 0)
+                save_params(
+                    file::get_data_path("tuning_output/texel_params_epoch_" + std::to_string(epoch + 1) + ".txt"),
+                    epoch + 1,
+                    train_loss,
+                    valid_loss);
         }
     }
 

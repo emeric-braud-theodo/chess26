@@ -6,12 +6,20 @@
 class EvalStateTest : public ::testing::Test
 {
 protected:
-    Board b;
-
-    void SetUp() override
-    {
-    }
+    void SetUp() override {}
 };
+
+// Fonction utilitaire pour comparer les PST buckets entre deux EvalState
+void expect_pst_eq(const EvalState &a, const EvalState &b, Color c, const std::string &msg)
+{
+    for (int bkt = 0; bkt < engine_constants::eval::PSQT_BUCKET_N; ++bkt)
+    {
+        EXPECT_EQ(a.mg_pst[c][bkt], b.mg_pst[c][bkt])
+            << msg << " (MG Bucket " << bkt << ", Color " << (c == WHITE ? "White" : "Black") << ")";
+        EXPECT_EQ(a.eg_pst[c][bkt], b.eg_pst[c][bkt])
+            << msg << " (EG Bucket " << bkt << ", Color " << (c == WHITE ? "White" : "Black") << ")";
+    }
+}
 
 TEST_F(EvalStateTest, IncrementalConsistency)
 {
@@ -19,7 +27,6 @@ TEST_F(EvalStateTest, IncrementalConsistency)
     // Position complexe avec roques possibles, promotions et captures EP
     b.load_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
 
-    // On génère des coups au hasard ou via MoveGen
     MoveList list;
     MoveGen::generate_legal_moves(b, list);
 
@@ -27,21 +34,23 @@ TEST_F(EvalStateTest, IncrementalConsistency)
     {
         Move m = list[i];
 
-        // 1. Sauvegarde de l'état initial
-        int initial_mg = b.get_eval_state().mg_pst[WHITE];
+        // 1. Sauvegarde de l'état initial (on copie les tableaux de scores)
+        int16_t initial_mg_w[engine_constants::eval::PSQT_BUCKET_N];
+        for (int bkt = 0; bkt < engine_constants::eval::PSQT_BUCKET_N; ++bkt)
+            initial_mg_w[bkt] = b.get_eval_state().mg_pst[WHITE][bkt];
+
         uint64_t initial_pawn_key = b.get_eval_state().pawn_key;
 
         // 2. Jouer le coup
         b.play(m);
 
         // 3. Calcul "Brut" pour vérifier
-        // On crée un EvalState tout neuf à partir du board actuel
         EvalState static_eval(b.get_all_bitboards());
 
-        // 4. Vérification de l'incrément
-        EXPECT_EQ(b.get_eval_state().mg_pst[WHITE], static_eval.mg_pst[WHITE])
-            << "MG PST White incohérent après coup: " << m.to_uci();
-        EXPECT_EQ(b.get_eval_state().mg_pst[BLACK], static_eval.mg_pst[BLACK]);
+        // 4. Vérification de l'incrément pour chaque camp et chaque bucket
+        expect_pst_eq(b.get_eval_state(), static_eval, WHITE, "Incohérence MG/EG");
+        expect_pst_eq(b.get_eval_state(), static_eval, BLACK, "Incohérence MG/EG");
+
         EXPECT_EQ(b.get_eval_state().phase, static_eval.phase)
             << "Phase incohérente après coup: " << m.to_uci();
         EXPECT_EQ(b.get_eval_state().pawn_key, static_eval.pawn_key)
@@ -49,8 +58,11 @@ TEST_F(EvalStateTest, IncrementalConsistency)
 
         // 5. Unplay et vérification du retour à l'état initial
         b.unplay(m);
-        EXPECT_EQ(b.get_eval_state().mg_pst[WHITE], initial_mg)
-            << "Erreur de décrémentation PST après unplay: " << m.to_uci();
+        for (int bkt = 0; bkt < engine_constants::eval::PSQT_BUCKET_N; ++bkt)
+        {
+            EXPECT_EQ(b.get_eval_state().mg_pst[WHITE][bkt], initial_mg_w[bkt])
+                << "Erreur de décrémentation PST après unplay: " << m.to_uci() << " Bucket: " << bkt;
+        }
         EXPECT_EQ(b.get_eval_state().pawn_key, initial_pawn_key)
             << "Erreur de décrémentation PawnKey après unplay: " << m.to_uci();
     }
@@ -59,10 +71,8 @@ TEST_F(EvalStateTest, IncrementalConsistency)
 TEST_F(EvalStateTest, ConsistencyLongSequence)
 {
     VBoard b;
-    // Position de départ complexe
     b.load_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
 
-    // Jouer 10 coups au hasard
     for (int i = 0; i < 10; i++)
     {
         MoveList list;
@@ -70,19 +80,22 @@ TEST_F(EvalStateTest, ConsistencyLongSequence)
         if (list.count == 0)
             break;
 
-        Move m = list[0]; // On prend le premier coup pour le test
+        Move m = list[0];
         b.play(m);
     }
 
-    // On récupère l'état incrémental
     EvalState incremental = b.get_eval_state();
+    EvalState static_recalc(b.get_all_bitboards());
 
-    // On force un recalcul total (Statique)
-    EvalState static_eval(b.get_all_bitboards());
+    // Vérifications multi-buckets
+    for (int bkt = 0; bkt < engine_constants::eval::PSQT_BUCKET_N; ++bkt)
+    {
+        ASSERT_EQ(incremental.mg_pst[WHITE][bkt], static_recalc.mg_pst[WHITE][bkt]) << "Erreur MG PST White Bucket " << bkt;
+        ASSERT_EQ(incremental.eg_pst[WHITE][bkt], static_recalc.eg_pst[WHITE][bkt]) << "Erreur EG PST White Bucket " << bkt;
+        ASSERT_EQ(incremental.mg_pst[BLACK][bkt], static_recalc.mg_pst[BLACK][bkt]) << "Erreur MG PST Black Bucket " << bkt;
+        ASSERT_EQ(incremental.eg_pst[BLACK][bkt], static_recalc.eg_pst[BLACK][bkt]) << "Erreur EG PST Black Bucket " << bkt;
+    }
 
-    // Vérifications
-    ASSERT_EQ(incremental.mg_pst[WHITE], static_eval.mg_pst[WHITE]) << "Erreur MG PST White";
-    ASSERT_EQ(incremental.eg_pst[WHITE], static_eval.eg_pst[WHITE]) << "Erreur EG PST White";
-    ASSERT_EQ(incremental.phase, static_eval.phase) << "Erreur Phase";
-    ASSERT_EQ(incremental.pawn_key, static_eval.pawn_key) << "Erreur Pawn Key";
+    ASSERT_EQ(incremental.phase, static_recalc.phase) << "Erreur Phase";
+    ASSERT_EQ(incremental.pawn_key, static_recalc.pawn_key) << "Erreur Pawn Key";
 }
